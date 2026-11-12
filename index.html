@@ -96,6 +96,11 @@
   </section>
 
   <section>
+    <h2>🧾 Recent winners</h2>
+    <div id="winHistoryBox">Loading…</div>
+  </section>
+
+  <section>
     <h2>💰 Claim winnings &amp; refunds</h2>
     <p>Winnings (BNB + SEER) and solo-round refunds accumulate in the contract and are pulled by you — nothing is ever pushed. One click claims everything.</p>
     <div class="row"><button class="btn gold" id="claimBtn" onclick="doClaim()">Claim</button></div>
@@ -241,6 +246,7 @@ async function refreshAll() {
     tickPhase();
     await loadBoard(cr);
     await loadLastSettled(cr);
+    await loadWinHistory(cr);
     if (account) {
       const co = await ethCall(SEL.claimableOf + encAddr(account));
       const b = wUint(co, 0), s = wUint(co, 1);
@@ -313,13 +319,55 @@ async function loadLastSettled(cr) {
           }
           return best;
         });
-        html += "<table style='margin-top:10px'><thead><tr><th>Place</th><th>Player</th><th>Weight</th><th>Closest guess</th></tr></thead><tbody>" +
-          addrs.map((a, i) => "<tr><td>" + (i + 1) + "</td><td class='mono'>" + short(a) + "</td><td>" + weights[i] + "%</td><td>" +
-            (shown[i] !== null ? "$" + fmtUsd(shown[i]) : "—") + "</td></tr>").join("") + "</tbody></table>";
+        const prizeBnb = i => pot * 85n * BigInt(weights[i]) / 10000n;
+        const prizeSeer = i => 2000000n * (10n ** 18n) * BigInt(weights[i]) / 100n;
+        html += "<table style='margin-top:10px'><thead><tr><th>Place</th><th>Player</th><th>Closest guess</th><th>Won (BNB)</th><th>Won (SEER)</th></tr></thead><tbody>" +
+          addrs.map((a, i) => "<tr><td>" + (i + 1) + "</td><td class='mono'>" + short(a) + "</td><td>" +
+            (shown[i] !== null ? "$" + fmtUsd(shown[i]) : "—") + "</td><td>" + fmtBnb(prizeBnb(i)) + "</td><td>" + fmtSeer(prizeSeer(i)) + "</td></tr>").join("") + "</tbody></table>";
       }
       $("lastRoundBox").innerHTML = html;
     }
     if (shown < 0 && !$("settleBtn").dataset.round) $("lastRoundBox").textContent = "No settled round to show yet.";
+  } catch (e) { /* keep old */ }
+}
+
+let histTick = 0, histRound = -1;
+async function loadWinHistory(cr) {
+  histTick++;
+  if (histRound === cr && histTick % 5 !== 0) return; // rescan on round change, otherwise every ~30s
+  histRound = cr;
+  try {
+    const rows = [];
+    let roundsFound = 0;
+    for (let r = cr - 1; r >= Math.max(0, cr - 40) && roundsFound < 5; r--) {
+      const ri = await ethCall(SEL.roundInfo + encUint(r));
+      if (!wBool(ri, 3) || wBool(ri, 4)) continue;
+      if (!Number(wUint(ri, 6))) continue;
+      const pot = wUint(ri, 2), answer = wInt(ri, 5);
+      const w = await ethCall(SEL.winnersOf + encUint(r));
+      const addrs = arrAddr(w, 0), weights = arrNum(w, 1);
+      const g = await ethCall(SEL.guessesOf + encUint(r));
+      const gPlayers = arrAddr(g, 0), gPrices = arrInt(g, 1);
+      for (let i = 0; i < addrs.length; i++) {
+        let best = null, bestD = null;
+        for (let j = 0; j < gPlayers.length; j++) {
+          if (gPlayers[j].toLowerCase() !== addrs[i].toLowerCase()) continue;
+          const d = gPrices[j] >= answer ? gPrices[j] - answer : answer - gPrices[j];
+          if (bestD === null || d < bestD) { bestD = d; best = gPrices[j]; }
+        }
+        rows.push({ r, i, a: addrs[i], best, ans: answer,
+          bnb: pot * 85n * BigInt(weights[i]) / 10000n,
+          seer: 2000000n * (10n ** 18n) * BigInt(weights[i]) / 100n });
+      }
+      roundsFound++;
+    }
+    if (!rows.length) {
+      $("winHistoryBox").innerHTML = "<p>No winning rounds yet — every settled round so far was a solo round (paid guesses refunded) or rounds are still waiting to be settled. The first competitive round will appear here.</p>";
+      return;
+    }
+    $("winHistoryBox").innerHTML = "<table><thead><tr><th>Round</th><th>Place</th><th>Player</th><th>Guess</th><th>Answer</th><th>Won (BNB)</th><th>Won (SEER)</th></tr></thead><tbody>" +
+      rows.map(x => "<tr><td>#" + x.r + "</td><td>" + (x.i + 1) + "</td><td class='mono'>" + short(x.a) + "</td><td>" +
+        (x.best !== null ? "$" + fmtUsd(x.best) : "—") + "</td><td>$" + fmtUsd(x.ans) + "</td><td>" + fmtBnb(x.bnb) + "</td><td>" + fmtSeer(x.seer) + "</td></tr>").join("") + "</tbody></table>";
   } catch (e) { /* keep old */ }
 }
 
